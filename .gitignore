@@ -1,0 +1,39 @@
+# ── Secret keys — NEVER upload these ─────────────────────────────────────────
+.env
+*.env
+
+# ── Database — stays on your machine only ─────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+backend/users.db
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Streamlit secrets (use Streamlit Cloud secrets instead) ──────────────────
+.streamlit/secrets.toml
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Temp files ────────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+bg_image.txt
