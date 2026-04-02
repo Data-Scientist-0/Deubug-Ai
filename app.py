@@ -61,7 +61,7 @@ def api(method, path, json=None, auth=True):
     if auth and st.session_state.token:
         headers["Authorization"] = f"Bearer {st.session_state.token}"
     try:
-        r = getattr(requests, method)(f"{API_URL}{path}", json=json, headers=headers, timeout=15)
+        r = getattr(requests, method)(f"{API_URL}{path}", json=json, headers=headers, timeout=60)
         return r.status_code, r.json() if r.content else {}
     except requests.exceptions.ConnectionError:
         return 0, {"detail": "Cannot connect to API server. Make sure FastAPI is running on port 8000."}
