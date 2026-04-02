@@ -291,3 +291,20 @@ def remove_session(session_id: int, current_user: dict = Depends(get_current_use
 @app.get("/health")
 def health():
     return {"status": "ok", "app": "DebugAI API", "version": "1.0.0"}
+
+
+# ── Debug env check ───────────────────────────────────────────────────────────
+@app.get("/debug/env")
+def debug_env():
+    from pathlib import Path
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    gmail_user = os.getenv("GMAIL_USER", "NOT SET")
+    gmail_pass = os.getenv("GMAIL_APP_PASSWORD", "NOT SET")
+    return {
+        "env_file_path":   str(env_path),
+        "env_file_exists": env_path.exists(),
+        "GMAIL_USER":      gmail_user if gmail_user != "NOT SET" else "NOT SET",
+        "GMAIL_APP_PASSWORD": "SET ✅" if gmail_pass and gmail_pass != "NOT SET" else "NOT SET ❌",
+        "GEMINI_API_KEY":  "SET ✅" if os.getenv("GEMINI_API_KEY") else "NOT SET ❌",
+        "JWT_SECRET":      "SET ✅" if os.getenv("JWT_SECRET") else "NOT SET ❌",
+    }

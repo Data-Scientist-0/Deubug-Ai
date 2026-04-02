@@ -1,125 +1,94 @@
+import smtplib
 import os
 from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-import hashlib
-import hmac
-import base64
-import json
-import time
-import random
-import re
-import os
-
-JWT_SECRET  = os.getenv("JWT_SECRET", "debugai-jwt-secret-change-in-production-2024")
-JWT_EXPIRY  = int(os.getenv("JWT_EXPIRY_HOURS", "24")) * 3600
-OTP_EXPIRY  = 600  # 10 minutes
-
-
-# ── Password hashing (pbkdf2 — stdlib only) ───────────────────────────────────
-
-def hash_password(password: str) -> str:
-    salt = base64.b64encode(os.urandom(16)).decode()
-    dk   = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
-    return f"{salt}${base64.b64encode(dk).decode()}"
+try:
+    from dotenv import load_dotenv
+    # Try multiple possible .env locations
+    possible_paths = [
+        Path(__file__).resolve().parent.parent / ".env",
+        Path(os.getcwd()) / ".env",
+        Path(".env"),
+    ]
+    for p in possible_paths:
+        if p.exists():
+            load_dotenv(dotenv_path=p, override=True)
+            break
+except Exception:
+    pass
 
 
-def verify_password(password: str, stored: str) -> bool:
+def send_otp_email(to_email: str, username: str, otp_code: str) -> tuple[bool, str]:
+    gmail_user     = os.getenv("GMAIL_USER", "").strip()
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+
+    if not gmail_user or not gmail_password:
+        # Show exactly what path we searched so user can debug
+        searched = [
+            str(Path(__file__).resolve().parent.parent / ".env"),
+            str(Path(os.getcwd()) / ".env"),
+        ]
+        return False, (
+            f"Cannot find GMAIL credentials. "
+            f"Your .env file should be at: {searched[0]} "
+            f"Make sure the file is named exactly '.env' (not '.env.txt') "
+            f"and contains: GMAIL_USER=your@gmail.com and GMAIL_APP_PASSWORD=yourpassword"
+        )
+
+    subject = "DebugAI — Your Verification Code"
+
+    html_body = f"""
+    <html>
+    <body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#d0e8ff;padding:40px;">
+        <div style="max-width:480px;margin:0 auto;background:#111827;border-radius:16px;
+                    border:1px solid rgba(127,119,221,0.4);padding:32px;">
+            <h1 style="color:#a0c4ff;font-size:24px;margin-bottom:4px;">🤖 DebugAI</h1>
+            <p style="color:#6b7280;font-size:13px;margin-top:0;">AI/ML Code Debugging Agent</p>
+            <hr style="border:none;border-top:1px solid rgba(127,119,221,0.2);margin:24px 0;">
+            <p style="color:#d0e8ff;font-size:15px;">Hi <strong>{username}</strong>,</p>
+            <p style="color:#9ca3af;font-size:14px;line-height:1.6;">
+                Welcome to DebugAI! Use the code below to verify your email.
+            </p>
+            <div style="background:#1f2937;border:1px solid rgba(127,119,221,0.5);
+                        border-radius:12px;padding:24px;text-align:center;margin:24px 0;">
+                <p style="color:#6b7280;font-size:12px;margin:0 0 8px;">Your verification code</p>
+                <p style="color:#c0b8ff;font-size:40px;font-weight:700;
+                           letter-spacing:12px;margin:0;font-family:monospace;">{otp_code}</p>
+                <p style="color:#6b7280;font-size:12px;margin:8px 0 0;">Expires in <strong>10 minutes</strong></p>
+            </div>
+            <p style="color:#6b7280;font-size:12px;">If you did not sign up for DebugAI, ignore this email.</p>
+        </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"DebugAI Verification\n\nHi {username},\n\nYour code: {otp_code}\n\nExpires in 10 minutes."
+
     try:
-        salt, stored_hash = stored.split("$", 1)
-        dk       = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
-        computed = base64.b64encode(dk).decode()
-        return hmac.compare_digest(computed, stored_hash)
-    except Exception:
-        return False
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = f"DebugAI <{gmail_user}>"
+        msg["To"]      = to_email
+        msg.attach(MIMEText(text_body, "plain"))
+        msg.attach(MIMEText(html_body, "html"))
 
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(gmail_user, gmail_password)
+            server.sendmail(gmail_user, to_email, msg.as_string())
 
-# ── JWT (stdlib hmac only) ────────────────────────────────────────────────────
+        return True, f"Verification code sent to {to_email}"
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _b64url_decode(s: str) -> bytes:
-    pad = 4 - len(s) % 4
-    if pad != 4:
-        s += "=" * pad
-    return base64.urlsafe_b64decode(s)
-
-
-def create_jwt(user_id: int, username: str) -> str:
-    header  = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    payload = _b64url_encode(json.dumps({
-        "sub":      user_id,
-        "username": username,
-        "iat":      int(time.time()),
-        "exp":      int(time.time()) + JWT_EXPIRY,
-    }).encode())
-    sig_input = f"{header}.{payload}".encode()
-    sig       = hmac.new(JWT_SECRET.encode(), sig_input, hashlib.sha256).digest()
-    return f"{header}.{payload}.{_b64url_encode(sig)}"
-
-
-def verify_jwt(token: str) -> dict | None:
-    try:
-        header, payload, signature = token.strip().split(".")
-        sig_input    = f"{header}.{payload}".encode()
-        expected_sig = hmac.new(JWT_SECRET.encode(), sig_input, hashlib.sha256).digest()
-        if not hmac.compare_digest(_b64url_encode(expected_sig), signature):
-            return None
-        data = json.loads(_b64url_decode(payload))
-        if data.get("exp", 0) < int(time.time()):
-            return None
-        return data
-    except Exception:
-        return None
-
-
-# ── OTP ───────────────────────────────────────────────────────────────────────
-
-def generate_otp() -> str:
-    return str(random.randint(100_000, 999_999))
-
-
-def otp_expires_at() -> int:
-    return int(time.time()) + OTP_EXPIRY
-
-
-def is_otp_valid(stored_otp: dict, submitted_code: str) -> tuple[bool, str]:
-    if not stored_otp:
-        return False, "No OTP found. Please request a new one."
-    if stored_otp.get("used"):
-        return False, "This OTP has already been used."
-    if int(time.time()) > stored_otp.get("expires_at", 0):
-        return False, "OTP has expired. Please request a new one."
-    if not hmac.compare_digest(str(stored_otp["code"]), str(submitted_code).strip()):
-        return False, "Incorrect OTP code."
-    return True, "OTP verified."
-
-
-# ── Input validation ──────────────────────────────────────────────────────────
-
-def validate_email(email: str) -> bool:
-    return bool(re.match(r"^[\w\.\+\-]+@[\w\-]+\.[a-zA-Z]{2,}$", email))
-
-
-def validate_password(password: str) -> tuple[bool, str]:
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters."
-    if not re.search(r"[A-Z]", password):
-        return False, "Password must have at least one uppercase letter."
-    if not re.search(r"\d", password):
-        return False, "Password must have at least one number."
-    return True, ""
-
-
-def validate_username(username: str) -> tuple[bool, str]:
-    username = username.strip()
-    if len(username) < 3:
-        return False, "Username must be at least 3 characters."
-    if len(username) > 30:
-        return False, "Username must be 30 characters or less."
-    if not re.match(r"^[a-zA-Z0-9_]+$", username):
-        return False, "Username can only contain letters, numbers, and underscores."
-    return True, ""
+    except smtplib.SMTPAuthenticationError:
+        return False, (
+            "Gmail authentication failed. "
+            "You must use a Gmail App Password, not your regular Gmail password. "
+            "Go to myaccount.google.com → Security → 2-Step Verification → App passwords → Create one."
+        )
+    except smtplib.SMTPException as e:
+        return False, f"SMTP error: {str(e)}"
+    except Exception as e:
+        return False, f"Email error: {str(e)}"
