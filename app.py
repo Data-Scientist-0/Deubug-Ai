@@ -1,7 +1,11 @@
 import streamlit as st
-import base64, os, requests
+import base64, os, requests, threading, time
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+
+from agent import analyze_code, chat_response
+from parser import parse_response
+
 
 from agent import analyze_code, chat_response
 from parser import parse_response
@@ -11,6 +15,20 @@ st.set_page_config(
     page_icon="🤖", layout="wide",
     initial_sidebar_state="expanded",
 )
+# ── Keep Railway alive ────────────────────────────────────────────────────────
+def keep_alive():
+    while True:
+        try:
+            requests.get(f"{API_URL}/health", timeout=10)
+        except Exception:
+            pass
+        time.sleep(300)
+
+if "keep_alive_started" not in st.session_state:
+    st.session_state.keep_alive_started = True
+    t = threading.Thread(target=keep_alive, daemon=True)
+    t.start()
+
 
 def set_background(path):
     if not os.path.exists(path):
