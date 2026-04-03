@@ -1,10 +1,12 @@
 import sys
+import os
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
+
 load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 
-import os
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -29,7 +31,6 @@ from .models import (
     SessionResponse, SessionDetailResponse, StatsResponse,
 )
 
-# ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="DebugAI API",
     description="AI/ML Code Debugging Agent — FastAPI Backend",
@@ -49,7 +50,13 @@ init_db()
 security = HTTPBearer()
 
 
-# ── Auth dependency ───────────────────────────────────────────────────────────
+def send_email_background(email: str, username: str, otp: str):
+    """Send email in background thread — non blocking."""
+    try:
+        send_otp_email(email, username, otp)
+    except Exception:
+        pass
+
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     token = credentials.credentials
@@ -72,44 +79,34 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/auth/register", response_model=MessageResponse)
-def register(body: RegisterRequest):
-    # Validate username
+def register(body: RegisterRequest, background_tasks: BackgroundTasks):
     ok, msg = validate_username(body.username)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-
-    # Validate email
     if not validate_email(body.email):
         raise HTTPException(status_code=400, detail="Invalid email address.")
-
-    # Validate password
     ok, msg = validate_password(body.password)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-
-    # Check duplicates
     if get_user_by_username(body.username):
         raise HTTPException(status_code=409, detail="Username already taken.")
     if get_user_by_email(body.email):
         raise HTTPException(status_code=409, detail="Email already registered.")
 
-    # Create user (unverified)
     hashed = hash_password(body.password)
     user   = create_user(body.username, body.email, hashed)
     if not user:
         raise HTTPException(status_code=500, detail="Failed to create account.")
 
-    # Generate + send OTP
-    otp  = generate_otp()
-    exp  = otp_expires_at()
+    otp = generate_otp()
+    exp = otp_expires_at()
     save_otp(body.email, otp, exp)
-    ok, msg = send_otp_email(body.email, body.username, otp)
 
-    if not ok:
-        raise HTTPException(status_code=500, detail=f"Account created but email failed: {msg}")
+    # Send email in background — API responds instantly
+    background_tasks.add_task(send_email_background, body.email, body.username, otp)
 
     return MessageResponse(
-        message=f"Account created! A 6-digit verification code has been sent to {body.email}",
+        message=f"Account created! A 6-digit verification code is being sent to {body.email}. Check your inbox in a few seconds.",
         success=True,
     )
 
@@ -119,38 +116,29 @@ def verify_otp(body: VerifyOTPRequest):
     user = get_user_by_email(body.email)
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email.")
-
     if user["is_verified"]:
         return MessageResponse(message="Email already verified. You can log in.", success=True)
-
     stored = get_latest_otp(body.email)
     valid, msg = is_otp_valid(stored, body.otp)
     if not valid:
         raise HTTPException(status_code=400, detail=msg)
-
     verify_user_email(body.email)
     mark_otp_used(body.email)
-
     return MessageResponse(message="Email verified! You can now log in.", success=True)
 
 
 @app.post("/auth/resend-otp", response_model=MessageResponse)
-def resend_otp(body: ResendOTPRequest):
+def resend_otp(body: ResendOTPRequest, background_tasks: BackgroundTasks):
     user = get_user_by_email(body.email)
     if not user:
         raise HTTPException(status_code=404, detail="No account found with this email.")
     if user["is_verified"]:
         return MessageResponse(message="Email already verified.", success=True)
-
     otp = generate_otp()
     exp = otp_expires_at()
     save_otp(body.email, otp, exp)
-    ok, msg = send_otp_email(body.email, user["username"], otp)
-
-    if not ok:
-        raise HTTPException(status_code=500, detail=msg)
-
-    return MessageResponse(message=f"New verification code sent to {body.email}", success=True)
+    background_tasks.add_task(send_email_background, body.email, user["username"], otp)
+    return MessageResponse(message=f"New verification code is being sent to {body.email}", success=True)
 
 
 @app.post("/auth/login", response_model=TokenResponse)
@@ -158,16 +146,13 @@ def login(body: LoginRequest):
     user = get_user_by_username(body.username)
     if not user:
         raise HTTPException(status_code=401, detail="Username not found.")
-
     if not verify_password(body.password, user["password"]):
         raise HTTPException(status_code=401, detail="Incorrect password.")
-
     if not user["is_verified"]:
         raise HTTPException(
             status_code=403,
             detail="Email not verified. Please check your inbox for the verification code.",
         )
-
     token = create_jwt(user["id"], user["username"])
     return TokenResponse(
         access_token=token,
@@ -178,7 +163,7 @@ def login(body: LoginRequest):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# USER ROUTES (protected)
+# USER ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/users/me", response_model=UserResponse)
@@ -197,11 +182,9 @@ def update_me(body: UpdateUsernameRequest, current_user: dict = Depends(get_curr
     ok, msg = validate_username(body.username)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-
     updated = update_username(current_user["id"], body.username)
     if not updated:
         raise HTTPException(status_code=409, detail="Username already taken.")
-
     return MessageResponse(message="Username updated successfully.", success=True)
 
 
@@ -209,11 +192,9 @@ def update_me(body: UpdateUsernameRequest, current_user: dict = Depends(get_curr
 def change_password(body: UpdatePasswordRequest, current_user: dict = Depends(get_current_user)):
     if not verify_password(body.old_password, current_user["password"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
-
     ok, msg = validate_password(body.new_password)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-
     update_password(current_user["id"], hash_password(body.new_password))
     return MessageResponse(message="Password changed successfully.", success=True)
 
@@ -225,7 +206,7 @@ def delete_me(current_user: dict = Depends(get_current_user)):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SESSION ROUTES (protected)
+# SESSION ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/sessions/stats", response_model=StatsResponse)
@@ -296,15 +277,12 @@ def health():
 # ── Debug env check ───────────────────────────────────────────────────────────
 @app.get("/debug/env")
 def debug_env():
-    from pathlib import Path
     env_path = Path(__file__).resolve().parent.parent / ".env"
-    gmail_user = os.getenv("GMAIL_USER", "NOT SET")
-    gmail_pass = os.getenv("GMAIL_APP_PASSWORD", "NOT SET")
     return {
-        "env_file_path":   str(env_path),
-        "env_file_exists": env_path.exists(),
-        "GMAIL_USER":      gmail_user if gmail_user != "NOT SET" else "NOT SET",
-        "GMAIL_APP_PASSWORD": "SET ✅" if gmail_pass and gmail_pass != "NOT SET" else "NOT SET ❌",
-        "GEMINI_API_KEY":  "SET ✅" if os.getenv("GEMINI_API_KEY") else "NOT SET ❌",
-        "JWT_SECRET":      "SET ✅" if os.getenv("JWT_SECRET") else "NOT SET ❌",
+        "env_file_path":      str(env_path),
+        "env_file_exists":    env_path.exists(),
+        "GMAIL_USER":         os.getenv("GMAIL_USER", "NOT SET"),
+        "GMAIL_APP_PASSWORD": "SET ✅" if os.getenv("GMAIL_APP_PASSWORD") else "NOT SET ❌",
+        "GEMINI_API_KEY":     "SET ✅" if os.getenv("GEMINI_API_KEY") else "NOT SET ❌",
+        "JWT_SECRET":         "SET ✅" if os.getenv("JWT_SECRET") else "NOT SET ❌",
     }
