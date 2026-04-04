@@ -2,6 +2,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 try:
@@ -24,7 +25,7 @@ def send_otp_email(to_email: str, username: str, otp_code: str) -> tuple[bool, s
     print(f"[EMAIL] API key set: {bool(api_key)}", flush=True)
 
     if not api_key:
-        return False, "RESEND_API_KEY not configured. Add it to your environment variables."
+        return False, "RESEND_API_KEY not configured."
 
     html_body = f"""
     <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;padding:40px;">
@@ -58,27 +59,72 @@ def send_otp_email(to_email: str, username: str, otp_code: str) -> tuple[bool, s
         "text":    f"Hi {username},\n\nYour DebugAI verification code is: {otp_code}\n\nExpires in 10 minutes.",
     }).encode("utf-8")
 
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type":  "application/json",
-        },
-        method="POST",
-    )
-
     try:
-        print("[EMAIL] Calling Resend API...", flush=True)
+        # Try resend package first
+        try:
+            import resend
+            resend.api_key = api_key
+            print("[EMAIL] Using resend package...", flush=True)
+            params = {
+                "from":    "DebugAI <onboarding@resend.dev>",
+                "to":      [to_email],
+                "subject": "DebugAI — Your Verification Code",
+                "html":    html_body,
+                "text":    f"Hi {username}, your code is: {otp_code}",
+            }
+            email = resend.Emails.send(params)
+            print(f"[EMAIL] SUCCESS via resend package: {email}", flush=True)
+            return True, f"Verification code sent to {to_email}"
+        except ImportError:
+            print("[EMAIL] resend package not found, trying requests...", flush=True)
+
+        # Fallback to requests
+        try:
+            import requests as req_lib
+            print("[EMAIL] Using requests library...", flush=True)
+            response = req_lib.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type":  "application/json",
+                    "User-Agent":    "DebugAI/1.0",
+                },
+                json={
+                    "from":    "DebugAI <onboarding@resend.dev>",
+                    "to":      [to_email],
+                    "subject": "DebugAI — Your Verification Code",
+                    "html":    html_body,
+                    "text":    f"Hi {username}, your code is: {otp_code}",
+                },
+                timeout=30,
+            )
+            print(f"[EMAIL] Response: {response.status_code} {response.text}", flush=True)
+            if response.status_code in (200, 201):
+                return True, f"Verification code sent to {to_email}"
+            return False, f"Resend error: {response.text}"
+        except ImportError:
+            print("[EMAIL] requests not found, using urllib...", flush=True)
+
+        # Final fallback urllib
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type":  "application/json",
+                "User-Agent":    "python-urllib/3.11",
+            },
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read().decode())
-            print(f"[EMAIL] SUCCESS: {result}", flush=True)
+            print(f"[EMAIL] SUCCESS via urllib: {result}", flush=True)
             return True, f"Verification code sent to {to_email}"
 
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         print(f"[EMAIL ERROR] HTTP {e.code}: {body}", flush=True)
-        return False, f"Email API error: {body}"
+        return False, f"Email API error {e.code}: {body}"
     except Exception as e:
         print(f"[EMAIL ERROR] {type(e).__name__}: {str(e)}", flush=True)
         return False, f"Email error: {str(e)}"
