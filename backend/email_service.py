@@ -1,18 +1,16 @@
 import smtplib
 import os
+import sys
 from pathlib import Path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 try:
     from dotenv import load_dotenv
-    # Try multiple possible .env locations
-    possible_paths = [
+    for p in [
         Path(__file__).resolve().parent.parent / ".env",
         Path(os.getcwd()) / ".env",
-        Path(".env"),
-    ]
-    for p in possible_paths:
+    ]:
         if p.exists():
             load_dotenv(dotenv_path=p, override=True)
             break
@@ -24,49 +22,38 @@ def send_otp_email(to_email: str, username: str, otp_code: str) -> tuple[bool, s
     gmail_user     = os.getenv("GMAIL_USER", "").strip()
     gmail_password = os.getenv("GMAIL_APP_PASSWORD", "").strip()
 
+    # Print to Railway logs so we can debug
+    print(f"[EMAIL] Attempting to send to: {to_email}", flush=True)
+    print(f"[EMAIL] From: {gmail_user}", flush=True)
+    print(f"[EMAIL] Password set: {bool(gmail_password)}", flush=True)
+    print(f"[EMAIL] Password length: {len(gmail_password)}", flush=True)
+
     if not gmail_user or not gmail_password:
-        # Show exactly what path we searched so user can debug
-        searched = [
-            str(Path(__file__).resolve().parent.parent / ".env"),
-            str(Path(os.getcwd()) / ".env"),
-        ]
-        return False, (
-            f"Cannot find GMAIL credentials. "
-            f"Your .env file should be at: {searched[0]} "
-            f"Make sure the file is named exactly '.env' (not '.env.txt') "
-            f"and contains: GMAIL_USER=your@gmail.com and GMAIL_APP_PASSWORD=yourpassword"
-        )
+        msg = "Email credentials not configured."
+        print(f"[EMAIL ERROR] {msg}", flush=True)
+        return False, msg
 
-    subject = "DebugAI — Your Verification Code"
-
+    subject   = "DebugAI — Your Verification Code"
+    text_body = f"Hi {username},\n\nYour DebugAI verification code is: {otp_code}\n\nExpires in 10 minutes."
     html_body = f"""
-    <html>
-    <body style="font-family:Arial,sans-serif;background:#0a0f1e;color:#d0e8ff;padding:40px;">
-        <div style="max-width:480px;margin:0 auto;background:#111827;border-radius:16px;
-                    border:1px solid rgba(127,119,221,0.4);padding:32px;">
-            <h1 style="color:#a0c4ff;font-size:24px;margin-bottom:4px;">🤖 DebugAI</h1>
-            <p style="color:#6b7280;font-size:13px;margin-top:0;">AI/ML Code Debugging Agent</p>
-            <hr style="border:none;border-top:1px solid rgba(127,119,221,0.2);margin:24px 0;">
-            <p style="color:#d0e8ff;font-size:15px;">Hi <strong>{username}</strong>,</p>
-            <p style="color:#9ca3af;font-size:14px;line-height:1.6;">
-                Welcome to DebugAI! Use the code below to verify your email.
-            </p>
-            <div style="background:#1f2937;border:1px solid rgba(127,119,221,0.5);
-                        border-radius:12px;padding:24px;text-align:center;margin:24px 0;">
-                <p style="color:#6b7280;font-size:12px;margin:0 0 8px;">Your verification code</p>
-                <p style="color:#c0b8ff;font-size:40px;font-weight:700;
-                           letter-spacing:12px;margin:0;font-family:monospace;">{otp_code}</p>
-                <p style="color:#6b7280;font-size:12px;margin:8px 0 0;">Expires in <strong>10 minutes</strong></p>
-            </div>
-            <p style="color:#6b7280;font-size:12px;">If you did not sign up for DebugAI, ignore this email.</p>
+    <html><body style="font-family:Arial,sans-serif;background:#0a0f1e;padding:40px;">
+    <div style="max-width:480px;margin:0 auto;background:#111827;border-radius:16px;
+                border:1px solid rgba(127,119,221,0.4);padding:32px;">
+        <h1 style="color:#a0c4ff;">🤖 DebugAI</h1>
+        <p style="color:#d0e8ff;">Hi <strong>{username}</strong>,</p>
+        <p style="color:#9ca3af;">Your verification code is:</p>
+        <div style="background:#1f2937;border-radius:12px;padding:24px;text-align:center;margin:24px 0;">
+            <p style="color:#c0b8ff;font-size:40px;font-weight:700;letter-spacing:12px;
+                       margin:0;font-family:monospace;">{otp_code}</p>
+            <p style="color:#6b7280;font-size:12px;margin:8px 0 0;">Expires in 10 minutes</p>
         </div>
-    </body>
-    </html>
+        <p style="color:#6b7280;font-size:12px;">If you did not sign up for DebugAI, ignore this email.</p>
+    </div>
+    </body></html>
     """
 
-    text_body = f"DebugAI Verification\n\nHi {username},\n\nYour code: {otp_code}\n\nExpires in 10 minutes."
-
     try:
+        print("[EMAIL] Connecting to smtp.gmail.com:587...", flush=True)
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = f"DebugAI <{gmail_user}>"
@@ -74,21 +61,26 @@ def send_otp_email(to_email: str, username: str, otp_code: str) -> tuple[bool, s
         msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
             server.ehlo()
             server.starttls()
+            print("[EMAIL] Logging in...", flush=True)
             server.login(gmail_user, gmail_password)
+            print("[EMAIL] Sending...", flush=True)
             server.sendmail(gmail_user, to_email, msg.as_string())
 
+        print(f"[EMAIL] SUCCESS — sent to {to_email}", flush=True)
         return True, f"Verification code sent to {to_email}"
 
-    except smtplib.SMTPAuthenticationError:
-        return False, (
-            "Gmail authentication failed. "
-            "You must use a Gmail App Password, not your regular Gmail password. "
-            "Go to myaccount.google.com → Security → 2-Step Verification → App passwords → Create one."
-        )
+    except smtplib.SMTPAuthenticationError as e:
+        msg = f"Gmail auth failed: {str(e)}. Use App Password not regular password."
+        print(f"[EMAIL ERROR] {msg}", flush=True)
+        return False, msg
     except smtplib.SMTPException as e:
-        return False, f"SMTP error: {str(e)}"
+        msg = f"SMTP error: {str(e)}"
+        print(f"[EMAIL ERROR] {msg}", flush=True)
+        return False, msg
     except Exception as e:
-        return False, f"Email error: {str(e)}"
+        msg = f"Email error: {type(e).__name__}: {str(e)}"
+        print(f"[EMAIL ERROR] {msg}", flush=True)
+        return False, msg
